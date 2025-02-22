@@ -49,9 +49,6 @@ func (d *DynamoClient) UpdateUserInDynamoDB(ctx context.Context, userID string, 
 	}
 
 	updateExpression, exprValues := buildUpdateExpression(profile)
-	if updateExpression == "" {
-		return fmt.Errorf("no valid fields provided for update")
-	}
 
 	exprValues[":UpdatedAt"] = &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)}
 
@@ -70,6 +67,7 @@ func (d *DynamoClient) UpdateUserInDynamoDB(ctx context.Context, userID string, 
 
 	return nil
 }
+
 
 func buildUpdateExpression(profile models.UserProfile) (string, map[string]types.AttributeValue) {
 	fields := map[string]string{
