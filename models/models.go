@@ -13,7 +13,12 @@ type UserProfile struct {
 }
 
 type RequestPayload struct {
-	Repo        string      `json:"repo"`
-	Profile     UserProfile `json:"profile"`
-	BearerToken string      `json:"bearerToken"`
+	DID       string      `json:"did"`
+	Profile   UserProfile `json:"profile"`
+	AuthToken string      `json:"authToken"`
+}
+
+type UpdateProfileResponse struct {
+	Message string `json:"message"`
+	Success bool   `json:"success"`
 }

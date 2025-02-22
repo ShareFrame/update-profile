@@ -79,42 +79,42 @@ func isValidHexColor(color string) bool {
 	return hexColorRegex.MatchString(color)
 }
 
-func HandleRequest(ctx context.Context, request models.RequestPayload) (map[string]string, error) {
-	logrus.WithField("repo", request.Repo).Info("Processing profile update request")
+func HandleRequest(ctx context.Context, request models.RequestPayload) (models.UpdateProfileResponse, error) {
+    logrus.WithField("did", request.DID).Info("Processing profile update request")
 
-	dynamoClient, err := dynamodb.NewDynamoClient()
-	if err != nil {
-		logrus.WithError(err).Error("Failed to initialize DynamoDB client")
-		return map[string]string{"error": "Internal server error"}, err
-	}
+    dynamoClient, err := dynamodb.NewDynamoClient()
+    if err != nil {
+        logrus.WithError(err).Error("Failed to initialize DynamoDB client")
+        return models.UpdateProfileResponse{Message: "Internal server error", Success: false}, err
+    }
 
-	profile := request.Profile
+    profile := request.Profile
 
-	if err := validateProfile(profile); err != nil {
-		logrus.WithError(err).Warn("Profile validation failed")
-		return map[string]string{"error": err.Error()}, nil
-	}
+    if err := validateProfile(profile); err != nil {
+        logrus.WithError(err).Warn("Profile validation failed")
+        return models.UpdateProfileResponse{Message: "Profile validation failed", Success: false}, nil
+    }
 
-	logrus.WithField("profile", profile).Info("Validated profile successfully")
+    logrus.WithField("profile", profile).Info("Validated profile successfully")
 
-	response, err := updateProfileInATProtocol(request.Repo, profile, request.BearerToken, false)
-	if err != nil {
-		logrus.WithError(err).Error("Failed to update profile in AT Protocol")
-		return map[string]string{"error": err.Error()}, nil
-	}
+    _, err = updateProfileInATProtocol(request.DID, profile, request.AuthToken, false)
+    if err != nil {
+        logrus.WithError(err).Error("Failed to update profile in AT Protocol")
+        return models.UpdateProfileResponse{Message: "Failed to update profile in AT Protocol", Success: false}, err
+    }
 
-	if err := dynamoClient.UpdateUserInDynamoDB(ctx, request.Repo, profile); err != nil {
-		logrus.WithError(err).Error("Failed to update profile in DynamoDB")
-		return map[string]string{"error": "Failed to update profile in database"}, err
-	}
+    if err := dynamoClient.UpdateUserInDynamoDB(ctx, request.DID, profile); err != nil {
+        logrus.WithError(err).Error("Failed to update profile in DynamoDB")
+        return models.UpdateProfileResponse{Message: "Failed to update profile in database", Success: false}, err
+    }
 
-	logrus.WithField("repo", request.Repo).Info("Updated profile in DynamoDB successfully")
-	logrus.Info("Profile update completed successfully")
+    logrus.WithField("did", request.DID).Info("Updated profile in DynamoDB successfully")
+    logrus.Info("Profile update completed successfully")
 
-	return map[string]string{
-		"message":  "Profile updated successfully",
-		"response": response,
-	}, nil
+    return models.UpdateProfileResponse{
+        Message: "Profile updated successfully",
+        Success: true,
+    }, nil
 }
 
 func updateProfileInATProtocol(repo string, profile models.UserProfile, bearerToken string, validate bool) (string, error) {
