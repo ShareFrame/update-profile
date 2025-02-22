@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -16,30 +17,50 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+var (
+	hexColorRegex = regexp.MustCompile(`^#(?:[0-9a-fA-F]{3}){1,2}$`)
+	urlRegex      = regexp.MustCompile(`^(https?://)?([a-zA-Z0-9.-]+)(:[0-9]+)?(/.*)?$`)
+)
+
 func validateProfile(profile models.UserProfile) error {
 	logrus.WithField("received_nsid", profile.NSID).Info("Validating NSID")
 
 	var validationErrors []string
 
 	if profile.NSID != "social.shareframe.profile" {
-		validationErrors = append(validationErrors, "invalid NSID: only social.shareframe.profile is allowed")
+		return errors.New("profile validation failed: invalid NSID: only 'social.shareframe.profile' is allowed")
 	}
-	if profile.DisplayName == "" {
-		validationErrors = append(validationErrors, "displayName must be present")
+
+	validations := map[string]func() bool{
+		"bio must be 256 characters or fewer": func() bool { return len(profile.Bio) > 256 },
+		"invalid profilePicture URL":          func() bool { return profile.ProfilePicture != "" && !isValidURL(profile.ProfilePicture) },
+		"invalid profileBanner URL":           func() bool { return profile.ProfileBanner != "" && !isValidURL(profile.ProfileBanner) },
+		"theme must be 'light', 'dark', or 'custom'": func() bool {
+			return profile.Theme != "" && profile.Theme != "light" && profile.Theme != "dark" && profile.Theme != "custom"
+		},
+		"primaryColor must be a valid hex code (e.g., #RRGGBB or #RGB)": func() bool {
+			return profile.PrimaryColor != "" && !isValidHexColor(profile.PrimaryColor)
+		},
+		"secondaryColor must be a valid hex code (e.g., #RRGGBB or #RGB)": func() bool {
+			return profile.SecondaryColor != "" && !isValidHexColor(profile.SecondaryColor)
+		},
 	}
-	if len(profile.Bio) > 256 {
-		validationErrors = append(validationErrors, "bio must be 256 characters or fewer")
+
+	for errMsg, check := range validations {
+		if check() {
+			validationErrors = append(validationErrors, errMsg)
+		}
 	}
-	if profile.Theme != "" && profile.Theme != "light" && profile.Theme != "dark" && profile.Theme != "custom" {
-		validationErrors = append(validationErrors, "theme must be light, dark, or custom")
-	}
-	if _, err := time.Parse(time.RFC3339, profile.UpdatedAt); err != nil {
+
+	if profile.UpdatedAt == "" {
+		validationErrors = append(validationErrors, "updatedAt is required")
+	} else if _, err := time.Parse(time.RFC3339, profile.UpdatedAt); err != nil {
 		validationErrors = append(validationErrors, "invalid datetime format for updatedAt")
 	}
 
 	if len(validationErrors) > 0 {
 		logrus.WithFields(logrus.Fields{
-			"errors": validationErrors,
+			"errors":  validationErrors,
 			"profile": profile,
 		}).Warn("Profile validation failed")
 
@@ -50,9 +71,15 @@ func validateProfile(profile models.UserProfile) error {
 	return nil
 }
 
+func isValidURL(url string) bool {
+	return urlRegex.MatchString(url)
+}
+
+func isValidHexColor(color string) bool {
+	return hexColorRegex.MatchString(color)
+}
 
 func HandleRequest(ctx context.Context, request models.RequestPayload) (map[string]string, error) {
-	logrus.WithField("raw_request", request).Info("Received request payload")
 	logrus.WithField("repo", request.Repo).Info("Processing profile update request")
 
 	dynamoClient, err := dynamodb.NewDynamoClient()
