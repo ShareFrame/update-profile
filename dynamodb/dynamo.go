@@ -50,7 +50,11 @@ func (d *DynamoClient) UpdateUserInDynamoDB(ctx context.Context, userID string, 
 
 	updateExpression, exprValues := buildUpdateExpression(profile)
 
-	exprValues[":UpdatedAt"] = &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)}
+	if len(exprValues) == 1 {
+		return fmt.Errorf("no valid fields provided to update")
+	}
+
+	log.Printf("Updating UserId: %s, UpdateExpression: %s", userID, updateExpression)
 
 	_, err := d.Client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName:                 aws.String(tableName),
@@ -90,6 +94,10 @@ func buildUpdateExpression(profile models.UserProfile) (string, map[string]types
 		}
 	}
 
+	exprValues[":UpdatedAt"] = &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)}
 	updateParts = append(updateParts, "UpdatedAt = :UpdatedAt")
-	return strings.Join(updateParts, ", "), exprValues
+
+	updateExpr := strings.Join(updateParts, ", ")
+
+	return updateExpr, exprValues
 }

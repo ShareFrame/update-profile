@@ -2,10 +2,13 @@ package dynamodb
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/ShareFrame/update-profile-service/models"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -20,6 +23,9 @@ func (m *MockDynamoDBAPI) UpdateItem(ctx context.Context, input *dynamodb.Update
 }
 
 func TestUpdateUserInDynamoDB(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
 	mockDynamoDB := new(MockDynamoDBAPI)
 	client := &DynamoClient{Client: mockDynamoDB}
 
@@ -29,39 +35,88 @@ func TestUpdateUserInDynamoDB(t *testing.T) {
 		profile     models.UserProfile
 		mockReturn  error
 		expectError bool
+		expectedSet []string
 	}{
 		{
-			name:   "Successful update",
+			name:   "Successful update with all fields",
 			userID: "user123",
 			profile: models.UserProfile{
-				DisplayName: "John Doe",
-				Bio:         "This is a test bio",
+				DisplayName:    "John Doe",
+				Bio:            "Test Bio",
+				ProfilePicture: "picture.jpg",
+				ProfileBanner:  "banner.jpg",
+				Theme:          "dark",
+				PrimaryColor:   "blue",
+				SecondaryColor: "red",
 			},
 			mockReturn:  nil,
 			expectError: false,
+			expectedSet: []string{
+				"DisplayName = :DisplayName",
+				"Bio = :Bio",
+				"ProfilePicture = :ProfilePicture",
+				"ProfileBanner = :ProfileBanner",
+				"Theme = :Theme",
+				"PrimaryColor = :PrimaryColor",
+				"SecondaryColor = :SecondaryColor",
+				"UpdatedAt = :UpdatedAt",
+			},
 		},
 		{
-			name:   "Update with empty fields (only UpdatedAt is set)",
+			name:   "Update with only some fields",
 			userID: "user456",
-			profile: models.UserProfile{},
+			profile: models.UserProfile{
+				DisplayName: "Jane Doe",
+				Bio:         "Hello world",
+			},
 			mockReturn:  nil,
 			expectError: false,
+			expectedSet: []string{
+				"DisplayName = :DisplayName",
+				"Bio = :Bio",
+				"UpdatedAt = :UpdatedAt",
+			},
 		},
 		{
-			name:        "Empty userID",
-			userID:      "",
-			profile:     models.UserProfile{DisplayName: "John Doe"},
+			name:   "Only UpdatedAt is updated when no fields are provided",
+			userID: "user789",
+			profile: models.UserProfile{},
 			mockReturn:  nil,
+			expectError: true, 
+			expectedSet: []string{},
+		},
+		{
+			name:   "DynamoDB returns an error",
+			userID: "user-error",
+			profile: models.UserProfile{
+				DisplayName: "Error User",
+			},
+			mockReturn:  fmt.Errorf("DynamoDB update error"),
 			expectError: true,
+			expectedSet: []string{
+				"DisplayName = :DisplayName",
+				"UpdatedAt = :UpdatedAt",
+			},
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.mockReturn != nil {
-				mockDynamoDB.On("UpdateItem", mock.Anything, mock.Anything).Return((*dynamodb.UpdateItemOutput)(nil), tc.mockReturn)
+			mockDynamoDB.ExpectedCalls = nil
+
+			_, exprValues := buildUpdateExpression(tc.profile)
+
+			if len(exprValues) == 1 {
+				mockDynamoDB.On("UpdateItem", mock.Anything, mock.Anything).Return(nil, fmt.Errorf("no valid fields provided to update"))
 			} else {
-				mockDynamoDB.On("UpdateItem", mock.Anything, mock.Anything).Return(&dynamodb.UpdateItemOutput{}, nil)
+				mockDynamoDB.On("UpdateItem", mock.Anything, mock.MatchedBy(func(input *dynamodb.UpdateItemInput) bool {
+					for _, expected := range tc.expectedSet {
+						if !strings.Contains(*input.UpdateExpression, expected) {
+							return false
+						}
+					}
+					return true
+				})).Return(&dynamodb.UpdateItemOutput{}, tc.mockReturn)
 			}
 
 			err := client.UpdateUserInDynamoDB(context.Background(), tc.userID, tc.profile)
@@ -78,12 +133,11 @@ func TestUpdateUserInDynamoDB(t *testing.T) {
 }
 
 
-
 func TestBuildUpdateExpression(t *testing.T) {
 	testCases := []struct {
-		name          string
-		profile       models.UserProfile
-		expectedParts []string
+		name             string
+		profile          models.UserProfile
+		expectedSetParts []string
 	}{
 		{
 			name: "All fields populated",
@@ -96,7 +150,7 @@ func TestBuildUpdateExpression(t *testing.T) {
 				PrimaryColor:   "blue",
 				SecondaryColor: "red",
 			},
-			expectedParts: []string{
+			expectedSetParts: []string{
 				"DisplayName = :DisplayName",
 				"Bio = :Bio",
 				"ProfilePicture = :ProfilePicture",
@@ -113,16 +167,16 @@ func TestBuildUpdateExpression(t *testing.T) {
 				DisplayName: "Jane Doe",
 				Bio:         "Hello world",
 			},
-			expectedParts: []string{
+			expectedSetParts: []string{
 				"DisplayName = :DisplayName",
 				"Bio = :Bio",
 				"UpdatedAt = :UpdatedAt",
 			},
 		},
 		{
-			name:    "No fields populated",
+			name: "No fields populated (should only update UpdatedAt)",
 			profile: models.UserProfile{},
-			expectedParts: []string{
+			expectedSetParts: []string{
 				"UpdatedAt = :UpdatedAt",
 			},
 		},
@@ -130,15 +184,13 @@ func TestBuildUpdateExpression(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			updateExpression, _ := buildUpdateExpression(tc.profile)
+			updateExpression, exprValues := buildUpdateExpression(tc.profile)
 
-			if len(tc.expectedParts) == 1 && tc.expectedParts[0] == "UpdatedAt = :UpdatedAt" {
-				assert.Equal(t, "UpdatedAt = :UpdatedAt", updateExpression, "Expected only UpdatedAt in update expression")
-			} else {
-				for _, part := range tc.expectedParts {
-					assert.Contains(t, updateExpression, part, "Update expression missing expected field")
-				}
+			for _, part := range tc.expectedSetParts {
+				assert.Contains(t, updateExpression, part, "Update expression missing expected field")
 			}
+
+			assert.Contains(t, exprValues, ":UpdatedAt", "UpdatedAt should always be in the expression values")
 		})
 	}
 }
